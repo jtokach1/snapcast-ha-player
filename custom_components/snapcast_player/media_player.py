@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import os.path
 import re
 import signal
@@ -67,6 +68,9 @@ TITLE_REGEXES = (
 DURATION_REGEX = re.compile(r"^ {2}Duration: ([\d:.]+),", re.MULTILINE)
 PROGRESS_REGEX = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d{2})")
 BUF_SIZE = 64 * 1024 * 1024
+FFMPEG_LOG_TAIL_SIZE = 64 * 1024
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -296,30 +300,63 @@ class SnapcastPlayer(MediaPlayerEntity):
         return None
 
     async def _read_ffmpeg_progress(self):
-        while True:
-            if self._proc and self._proc.returncode is None and not self._proc.stderr.at_eof():
-                try:
-                    data = await self._proc.stderr.readuntil(b"\r")
-                except IncompleteReadError:
-                    return
-                if match := PROGRESS_REGEX.search(data.decode("utf-8", errors="ignore")):
-                    position = to_seconds(match.group(1))
-                    if self._seek_position:
-                        position += round(self._seek_position)
-                    self._attr_media_position = position
-                    self._attr_media_position_updated_at = utcnow()
-            else:
-                self._attr_media_position = None
-                return
+        """Track FFmpeg progress and preserve its final error output."""
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+
+        stderr_tail = bytearray()
+
+        while proc.returncode is None and not proc.stderr.at_eof():
+            try:
+                data = await proc.stderr.readuntil(b"\r")
+            except IncompleteReadError as err:
+                data = err.partial
+                if data:
+                    stderr_tail.extend(data)
+                break
+
+            stderr_tail.extend(data)
+            if len(stderr_tail) > FFMPEG_LOG_TAIL_SIZE:
+                del stderr_tail[:-FFMPEG_LOG_TAIL_SIZE]
+
+            if match := PROGRESS_REGEX.search(data.decode("utf-8", errors="ignore")):
+                position = to_seconds(match.group(1))
+                if self._seek_position:
+                    position += round(self._seek_position)
+                self._attr_media_position = position
+                self._attr_media_position_updated_at = utcnow()
+
+        if proc.returncode is None:
+            await proc.wait()
+
+        if proc.returncode not in (None, 0):
+            ffmpeg_output = stderr_tail.decode("utf-8", errors="ignore").strip()
+            _LOGGER.error(
+                "FFmpeg exited for Snapcast player %s with code %s. "
+                "Destination: tcp://%s:%s. Input: %s. FFmpeg output: %s",
+                self._name,
+                proc.returncode,
+                self._host,
+                self._port,
+                self._uri.split("?", 1)[0] if self._uri else "<unknown>",
+                ffmpeg_output or "<no stderr output>",
+            )
+
+        if proc is self._proc:
+            self._attr_media_position = None
 
     async def _start_playback(self, uri: str, position: float | None = None, announcement: bool = False) -> Process:
         if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
+            try:
+                self._proc.terminate()
+            except ProcessLookupError:
+                pass
             self._is_stopped = False
 
         format_args = [
             "-f",
-            "u16le",
+            "s16le",
             "-acodec",
             "pcm_s16le",
             "-ac",
@@ -391,18 +428,30 @@ class SnapcastPlayer(MediaPlayerEntity):
     def media_stop(self) -> None:
         if self._proc is not None:
             self._queue = []
-            self._proc.terminate()
+            if self._proc.returncode is None:
+                try:
+                    self._proc.terminate()
+                except ProcessLookupError:
+                    pass
             self.hass.create_task(self.async_update())
 
     def media_pause(self) -> None:
         if self._proc is not None and self._proc.returncode is None:
-            self._proc.send_signal(signal.SIGSTOP)
+            try:
+                self._proc.send_signal(signal.SIGSTOP)
+            except ProcessLookupError:
+                self.hass.create_task(self.async_update())
+                return
             self._is_stopped = True
             self._attr_state = MediaPlayerState.PAUSED
 
     def media_play(self) -> None:
         if self._proc is not None and self._proc.returncode is None:
-            self._proc.send_signal(signal.SIGCONT)
+            try:
+                self._proc.send_signal(signal.SIGCONT)
+            except ProcessLookupError:
+                self.hass.create_task(self.async_update())
+                return
             self._is_stopped = False
             self._attr_state = MediaPlayerState.PLAYING
 
