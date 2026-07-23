@@ -1,3 +1,8 @@
+### *** See notes on [PCM Fix](https://github.com/jtokach1/snapcast-ha-player/blob/main/PCM%20Format%20fix.md)   ***
+
+
+
+
 # Snapcast Player Home Assistant Integration
 
 ⚠️ **Unfortunately, due to health issues I will not be able to maintain this integration in future, so your YMMV** ⚠️
