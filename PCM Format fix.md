@@ -7,10 +7,7 @@ custom_components/snapcast_player/media_player.py
 
 ## Summary
 
-Music Assistant appeared to be playing normally, and Snapserver/Snapclient logs looked healthy, but there was no sound from either of the Home Assistant bridge players:
-
-- `HA`
-- `MBA`
+Music Assistant appeared to be playing normally, and Snapserver/Snapclient logs looked healthy, but there was no sound from either of the Home Assistant bridge players.
 
 Music Assistant reported:
 
@@ -28,7 +25,6 @@ The problem was not Music Assistant, Snapserver, or the Snapclients. It was a PC
 
 - Music Assistant showed the source as playing.
 - Other Music Assistant players worked normally.
-- `HA` and `MBA` failed.
 - Music Assistant displayed `PlayerCommandFailed`.
 - Snapserver remained online and clients stayed connected.
 - No audio reached Snapcast from the Home Assistant bridge players.
@@ -103,49 +99,7 @@ Then restart Home Assistant.
 
 After the change:
 
-- Music Assistant could play to `HA` and `MBA`.
+- Music Assistant could play to Players.
 - Audio reached Snapserver correctly.
 - Snapclients produced synchronized audio again.
 - `PlayerCommandFailed` stopped occurring for normal playback.
-
-## Recommended Defensive Changes
-
-The integration should also avoid signaling an FFmpeg process that has already exited.
-
-For example, before calling `terminate()` or sending `SIGSTOP` / `SIGCONT`, confirm:
-
-```python
-self._proc is not None and self._proc.returncode is None
-```
-
-Catching `ProcessLookupError` is also useful because the process can exit between the status check and the signal call.
-
-## Important Note
-
-Keep a backup of the corrected file. Reinstalling or updating the custom `snapcast_player` integration may overwrite the fix and restore:
-
-```python
-"-f", "u16le"
-```
-
-The correct value for this configuration is:
-
-```python
-"-f", "s16le"
-```
-
-## Troubleshooting Conclusion
-
-When this exact failure returns, do not begin by rebuilding Music Assistant, Snapserver, or the Snapclients.
-
-First inspect:
-
-```text
-/config/custom_components/snapcast_player/media_player.py
-```
-
-and verify that the FFmpeg output format is still:
-
-```python
-"-f", "s16le"
-```
